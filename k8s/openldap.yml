@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openldap
+spec:
+  serviceName: openldap
+  replicas: 1
+  selector:
+    matchLabels:
+      de-app: openldap
+  template:
+    metadata:
+      labels:
+        de-app: openldap
+        app: de
+    spec:
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      volumes:
+        # cn=config tree, rendered fresh each boot by the init container.
+        - name: slapd-config
+          emptyDir: {}
+        # pid/args files; writable scratch needed under readOnlyRootFilesystem.
+        - name: run
+          emptyDir: {}
+        # slapd.conf template (built by the Ansible playbook in another repo).
+        - name: ldap-config
+          secret:
+            secretName: openldap-config
+            items:
+              - key: slapd.conf
+                path: slapd.conf
+      initContainers:
+        # Convert slapd.conf -> cn=config (slapd.d) on every start. The emptyDir
+        # target is always empty here, so the conversion runs unconditionally.
+        # -n0 processes only the config database: it writes the full slapd.d tree
+        # but doesn't try to open the mdb data backend (which lives on the PV,
+        # mounted only in the main container). Without -n0, slaptest exits 1 here.
+        - name: convert-config
+          image: harbor.cyverse.org/de/openldap
+          command:
+            - /usr/local/openldap/sbin/slaptest
+            - -n0
+            - -f
+            - /etc/ldap-secret/slapd.conf
+            - -F
+            - /etc/openldap/slapd.d
+          securityContext:
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "64Mi"
+              ephemeral-storage: "128Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+              ephemeral-storage: "256Mi"
+          volumeMounts:
+            - name: ldap-config
+              mountPath: /etc/ldap-secret
+              readOnly: true
+            - name: slapd-config
+              mountPath: /etc/openldap/slapd.d
+      containers:
+        - name: openldap
+          image: harbor.cyverse.org/de/openldap
+          args:
+            - -d
+            - "256"
+            - -h
+            - "ldap:/// ldaps:///"
+            - -F
+            - /etc/openldap/slapd.d
+          securityContext:
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "128Mi"
+              ephemeral-storage: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+              ephemeral-storage: "512Mi"
+          env:
+            - name: TZ
+              valueFrom:
+                configMapKeyRef:
+                  name: timezone
+                  key: timezone
+          ports:
+            - name: ldap
+              containerPort: 389
+            - name: ldaps
+              containerPort: 636
+          volumeMounts:
+            - name: slapd-config
+              mountPath: /etc/openldap/slapd.d
+            - name: run
+              mountPath: /var/run/openldap
+            - name: ldap-data
+              mountPath: /var/lib/openldap
+          livenessProbe:
+            tcpSocket:
+              port: ldap
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: ldap
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: ldap-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openldap
+spec:
+  selector:
+    de-app: openldap
+  ports:
+    - name: ldap
+      protocol: TCP
+      port: 389
+      targetPort: ldap
+    - name: ldaps
+      protocol: TCP
+      port: 636
+      targetPort: ldaps

@@ -106,6 +106,13 @@ done < /tmp/libs.txt
 
 # Runtime dirs, pre-chowned to the distroless nonroot user (65532:65532).
 mkdir -p /rootfs/var/lib/openldap /rootfs/var/run/openldap /rootfs/etc/openldap/slapd.d
+
+# Schema files. Installed under sysconfdir (/etc/openldap/schema), which the
+# $PREFIX copy above doesn't cover. They're needed at runtime so the init
+# container's `slaptest -f slapd.conf -F slapd.d` can resolve the schema
+# `include` directives when converting slapd.conf to the cn=config tree.
+cp -a /etc/openldap/schema /rootfs/etc/openldap/
+
 chown -R "${DISTROLESS_UID}:${DISTROLESS_UID}" \
     /rootfs/var/lib/openldap \
     /rootfs/var/run/openldap \
