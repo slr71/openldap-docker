@@ -32,6 +32,18 @@ spec:
             items:
               - key: slapd.conf
                 path: slapd.conf
+        # Initial directory entries (LDIF), built by the Ansible playbook. A
+        # Secret since entries may carry userPassword values; can be a ConfigMap
+        # if the seed data is purely structural.
+        - name: seed-src
+          secret:
+            secretName: openldap-seed
+            items:
+              - key: data.ldif
+                path: data.ldif
+        # Scratch for the prepared seed LDIF, passed between the init containers.
+        - name: seed
+          emptyDir: {}
       initContainers:
         # Convert slapd.conf -> cn=config (slapd.d) on every start. The emptyDir
         # target is always empty here, so the conversion runs unconditionally.
@@ -64,6 +76,74 @@ spec:
               readOnly: true
             - name: slapd-config
               mountPath: /etc/openldap/slapd.d
+            # slaptest validates that the mdb `directory` is writable, so the
+            # data PV must be mounted here even though -n0 never writes to it.
+            - name: ldap-data
+              mountPath: /var/lib/openldap
+        # Set-once data seed. prep-seed is the idempotency guard: if the mdb
+        # already exists (data.mdb present on the PV) it writes an empty LDIF so
+        # the slapadd below is a no-op; otherwise it stages the real LDIF. The
+        # guard runs in busybox because the slapd image has no shell.
+        - name: prep-seed
+          image: busybox:stable
+          command:
+            - sh
+            - -c
+            - |
+              if [ -f /var/lib/openldap/data.mdb ]; then
+                : > /seed/data.ldif
+              else
+                cp /seed-src/data.ldif /seed/data.ldif
+              fi
+          securityContext:
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "16Mi"
+              ephemeral-storage: "16Mi"
+            limits:
+              cpu: "50m"
+              memory: "32Mi"
+              ephemeral-storage: "32Mi"
+          volumeMounts:
+            - name: ldap-data
+              mountPath: /var/lib/openldap
+            - name: seed-src
+              mountPath: /seed-src
+              readOnly: true
+            - name: seed
+              mountPath: /seed
+        # Bulk-load the staged LDIF into the mdb database offline (slapd is not
+        # running yet). -n1 targets the mdb database; -F reads the converted
+        # config. On reboots the LDIF is empty, so this is a clean no-op.
+        - name: seed-data
+          image: harbor.cyverse.org/de/openldap
+          command:
+            - /usr/local/openldap/sbin/slapadd
+            - -n1
+            - -F
+            - /etc/openldap/slapd.d
+            - -l
+            - /seed/data.ldif
+          securityContext:
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "64Mi"
+              ephemeral-storage: "128Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+              ephemeral-storage: "256Mi"
+          volumeMounts:
+            - name: slapd-config
+              mountPath: /etc/openldap/slapd.d
+            - name: seed
+              mountPath: /seed
+            - name: ldap-data
+              mountPath: /var/lib/openldap
       containers:
         - name: openldap
           image: harbor.cyverse.org/de/openldap
