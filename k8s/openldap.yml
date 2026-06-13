@@ -197,6 +197,10 @@ spec:
     - metadata:
         name: ldap-data
       spec:
+        # Longhorn provides replicated block storage and is not the cluster
+        # default StorageClass, so it must be named explicitly. Override per
+        # environment with the kustomize overlay activated by a skaffold profile.
+        storageClassName: longhorn
         accessModes:
           - ReadWriteOnce
         resources:
