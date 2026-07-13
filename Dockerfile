@@ -138,6 +138,34 @@ fi
 "${PREFIX}/libexec/slapd" -VV
 EOF
 
+# slapd sizes (and zero-initializes) its connection table from the soft
+# RLIMIT_NOFILE, and container runtimes commonly hand out limits in the
+# billions (containerd with LimitNOFILE=infinity), which OOM-kills the pod
+# during startup. Distroless has no shell for ulimit, so a static wrapper
+# caps the soft limit before exec'ing slapd.
+RUN <<'EOF' bash
+set -euo pipefail
+cat > /tmp/slapd-fdcap.c <<'EOC'
+#include <sys/resource.h>
+#include <unistd.h>
+
+#define FD_CAP 8192
+static const char SLAPD[] = "/usr/local/openldap/libexec/slapd";
+
+int main(int argc, char **argv) {
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur > FD_CAP) {
+        rl.rlim_cur = FD_CAP;
+        setrlimit(RLIMIT_NOFILE, &rl);
+    }
+    argv[0] = (char *)SLAPD;
+    execv(SLAPD, argv);
+    return 127;
+}
+EOC
+gcc -O2 -static -o /rootfs/usr/local/openldap/libexec/slapd-fdcap /tmp/slapd-fdcap.c
+EOF
+
 #####################
 # Stage 2: runtime
 #####################
@@ -148,7 +176,7 @@ COPY --from=builder /rootfs/ /
 EXPOSE 1389 1636
 
 USER nonroot:nonroot
-ENTRYPOINT ["/usr/local/openldap/libexec/slapd"]
+ENTRYPOINT ["/usr/local/openldap/libexec/slapd-fdcap"]
 # Foreground, log to stderr (-d implies foreground in OpenLDAP). High ports
 # because the nonroot user can't bind the privileged LDAP defaults.
 CMD ["-d", "256", "-h", "ldap://:1389/ ldaps://:1636/"]
