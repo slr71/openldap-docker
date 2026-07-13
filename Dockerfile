@@ -145,9 +145,10 @@ FROM gcr.io/distroless/base-debian13:nonroot
 
 COPY --from=builder /rootfs/ /
 
-EXPOSE 389 636
+EXPOSE 1389 1636
 
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/openldap/libexec/slapd"]
-# Foreground, log to stderr (-d implies foreground in OpenLDAP).
-CMD ["-d", "256", "-h", "ldap:/// ldaps:///"]
+# Foreground, log to stderr (-d implies foreground in OpenLDAP). High ports
+# because the nonroot user can't bind the privileged LDAP defaults.
+CMD ["-d", "256", "-h", "ldap://:1389/ ldaps://:1636/"]
