@@ -11,7 +11,8 @@ build:
   platforms:
     - "linux/amd64"
 manifests:
-  rawYaml:
-    - k8s/openldap.yml
+  kustomize:
+    paths:
+      - k8s
 deploy:
   kubectl: {}
